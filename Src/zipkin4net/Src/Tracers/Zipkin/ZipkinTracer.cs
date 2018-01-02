@@ -11,13 +11,12 @@ namespace zipkin4net.Tracers.Zipkin
     /// </summary>
     public class ZipkinTracer : ITracer
     {
+        private readonly Recorder _recorder;
+
         [Obsolete]
         public IStatistics Statistics { get; private set; }
 
         private readonly MutableSpanMap _spanMap;
-
-        private readonly IReporter _reporter;
-
 
         public ZipkinTracer(IZipkinSender sender, ISpanSerializer spanSerializer, IStatistics statistics = null)
             : this(new ZipkinTracerReporter(sender, spanSerializer, statistics), statistics)
@@ -25,40 +24,37 @@ namespace zipkin4net.Tracers.Zipkin
         }
 
         internal ZipkinTracer(IReporter reporter, IStatistics statistics)
+            : this(reporter, new Recorder(new EndPoint(SerializerUtils.DefaultServiceName, SerializerUtils.DefaultEndPoint), reporter), statistics)
         {
+        }
+        
+        internal ZipkinTracer(IReporter reporter, Recorder recorder, IStatistics statistics)
+        {
+            _recorder = recorder;
             Statistics = statistics ?? new Statistics();
-            _reporter = reporter;
-            _spanMap = new MutableSpanMap(_reporter, Statistics);
+            _spanMap = new MutableSpanMap(reporter);
         }
 
+        [Obsolete("Please use the new IRecorder API")]
         public void Record(Record record)
         {
             Statistics.UpdateRecordProcessed();
 
             var traceContext = record.SpanState;
             var span = _spanMap.GetOrCreate(traceContext, (t) => new Span(t, record.Timestamp));
-            VisitAnnotation(record, span);
+            VisitAnnotation(_recorder, record, span);
 
             if (span.Complete)
             {
-                RemoveThenLogSpan(record.SpanState);
+                _spanMap.RemoveThenReportSpan(record.SpanState);
             }
         }
 
-        private static void VisitAnnotation(Record record, Span span)
+        private static void VisitAnnotation(Recorder recorder, Record record, Span span)
         {
-            var visitor = new ZipkinAnnotationVisitor(record, span);
+            var visitor = new ZipkinAnnotationVisitor(recorder, record, span.SpanState);
 
             record.Annotation.Accept(visitor);
-        }
-
-        private void RemoveThenLogSpan(ITraceContext spanState)
-        {
-            var spanToLog = _spanMap.Remove(spanState);
-            if (spanToLog != null)
-            {
-                _reporter.Report(spanToLog);
-            }
         }
     }
 }
